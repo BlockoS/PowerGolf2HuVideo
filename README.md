@@ -1,5 +1,8 @@
 # HuVideo extractor for Power Golf 2 - Golfer / パワーゴルフ2 ゴルファー (HCD4056)
 
+![03A0A7D0](https://blockos.org/releases/pcengine/HuVideo/PowerGolf2/video_0x03739450.gif)
+![0384CE50](https://blockos.org/releases/pcengine/HuVideo/PowerGolf2/video_0x0384CE50.gif)
+
 ## Decoder
 
 ### How to build
@@ -31,6 +34,7 @@ decode.sh <decoder> <img>
 `decode.sh` is a shell script that will extract all HuVideo from Power Golf 2 CDROM image and save them as animated GIF using `ffmpeg`.
 The CDROM image is expected to match the one from the `redump project`.
 
+The result can be found here : http://blockos.org/releases/pcengine/HuVideo/PowerGolf2/
 
 ### Parameters
  * `<decoder>` is the HuVideo decoder.

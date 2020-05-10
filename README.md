@@ -1,4 +1,4 @@
-# HuVideo extractor for HuVideo extractor for Power Golf 2 - Golfer / パワーゴルフ2 ゴルファー (HCD4056)
+# HuVideo extractor for Power Golf 2 - Golfer / パワーゴルフ2 ゴルファー (HCD4056)
 
 ## Decoder
 

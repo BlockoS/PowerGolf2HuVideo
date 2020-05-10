@@ -186,7 +186,6 @@ int main(int argc, char **argv) {
     }
     
     // Apart from the header the rest is game specific.
-    // This program will only work for Power Golf 2. 
 
     // Read palette
     fseek(in, offset + 0x20, SEEK_SET);
@@ -204,7 +203,7 @@ int main(int argc, char **argv) {
     }
 
     // Let's skip background attribute table (BAT) data as the frames are stored as-is and only use 1 palette.
-    // Unfortunatly the offset is bigger than the expected BAT data (which would have been header.width/8*header.height/8*2 = 0x200).
+    // The offset is bigger than the expected BAT data (which would have been header.width/8*header.height/8*2 = 0x200).
     // Even if it were the BAT for the whole animation, it doesn't match.
     // Worse! In some video (still un Power Golf 2), there's what seems to be left-overs from the coder hard drive (fragments of source code, or bits of file system).
     fseek(in, offset + 0x24c0, SEEK_SET);

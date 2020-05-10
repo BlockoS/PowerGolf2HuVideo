@@ -82,6 +82,7 @@ int decode_header(FILE *in, struct header_t *header) {
         fprintf(stderr, "invalid format.\n");
         return 0;
     }
+    // The next 8 bytes are unused.
     return 1;
 }
 

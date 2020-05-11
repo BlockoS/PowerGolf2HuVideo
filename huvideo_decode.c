@@ -17,6 +17,11 @@
 
 static uint32_t g_sector_size = 0x0930; // redump seems to be using mode1, so sectors are 2352 bytes long.
 
+enum GameID {
+    PowerGolf2,
+    Madden
+};
+
 enum HuVideoFormat {
     BG = 0,
     SPR
@@ -123,8 +128,44 @@ void tile_to_rgb8(uint8_t *rgb, uint8_t *vram, uint8_t *palette, struct header_t
     }
 }
 
+// Convert PCE sprite vram data to RGB8 (only supports 32*64 sprite size).
+void sprite_to_rgb8(uint8_t *rgb, uint8_t *vram, uint8_t *palette, struct header_t *header) {
+    uint16_t sprite_w = header->width / 16;
+    uint16_t sprite_h = header->height / 16;
+    uint32_t rgb_line_stride = header->width * 3;
+
+    for(int j=0; j<sprite_h; j++) {
+        for(int i=0; i<sprite_w; i++) {
+            uint16_t *pce_sprite = (uint16_t*)(vram + (i + j*sprite_w) * 0x80);
+            
+            int u = ((i & 1) * 16) + (j * 32);
+            int v = (i >> 1) * 16;
+            uint8_t *out_sprite = rgb + (u + v*header->width) * 3;
+            for(int y=0; y<16; y++, pce_sprite+=1, out_sprite+=rgb_line_stride) {
+                uint16_t w0 = pce_sprite[0];
+                uint16_t w1 = pce_sprite[16];
+                uint16_t w2 = pce_sprite[32];
+                uint16_t w3 = pce_sprite[48];
+
+                uint8_t *out = out_sprite + 15*3;
+                for(int x=0; x<16; x++, out-=3) {
+                    uint8_t index = (w0&1) | ((w1&1)<<1) | ((w2&1)<<2) | ((w3&1)<<3);
+                    out[0] = palette[3*index];
+                    out[1] = palette[3*index+1];
+                    out[2] = palette[3*index+2];
+
+                    w0 >>= 1;
+                    w1 >>= 1;
+                    w2 >>= 1;
+                    w3 >>= 1;
+                }
+            }
+        }
+    }
+}
+
 void usage() {
-    fprintf(stderr, "huvideo_decode -o/--offset N in output_prefix\n");
+    fprintf(stderr, "huvideo_decode -o/--offset N -g/--game G in output_prefix\n");
 }
 
 int main(int argc, char **argv) {
@@ -133,6 +174,7 @@ int main(int argc, char **argv) {
 
     const struct option options[] = {
         {"offset",  required_argument, 0, 'o' },
+        {"game",    optional_argument, 0, 'g' },
         {0,         0,                 0,  0 }
     };
 
@@ -152,8 +194,10 @@ int main(int argc, char **argv) {
     size_t filename_len;
     char *filename;
 
+    int game_id = PowerGolf2;
+    
     for(;;) {
-        c = getopt_long(argc, argv, "o:", options, &option_index);
+        c = getopt_long(argc, argv, "g:o:", options, &option_index);
         if(c < 0) {
             break;
         }
@@ -161,10 +205,19 @@ int main(int argc, char **argv) {
             case 'o':
                 offset = strtoul(optarg, NULL, 16);
                 break;
+            case 'g':
+                game_id = atoi(optarg);
+                break;
             default:
                 usage();
                 return EXIT_FAILURE;
         }
+    }
+
+    if((game_id < 0) || (game_id > Madden)) {
+        fprintf(stderr, "Invalid game id. It must be either 0 (Power Golf 2 - Golfer) or 1 (John Madden Duo CD Football).\n");
+        usage();
+        return EXIT_FAILURE;
     }
 
     if((optind + 2) > argc) {
@@ -205,8 +258,27 @@ int main(int argc, char **argv) {
         palette[i*3+2] = 255 * (buffer[2*i] & 0x07) / 7;
     }
 
+    int32_t skip_sector_count = 0;
+    // Found by trial and error.
+    if(game_id == PowerGolf2) {
+        skip_sector_count = 8;
+    }
+    else {
+        // Madden
+        if((header.width == 0x80) && (header.height == 0x80)) {
+            skip_sector_count = header.unknown[1];
+        }
+        else if((header.width == 0x100) && (header.height == 0x70)) {
+            skip_sector_count = 0x4;
+        }
+        else {
+            header.format = SPR;
+            skip_sector_count = header.unknown[1];
+        }
+    }
+
     // Skip what should have been palettes and tiles data, but ... there's only 1 palette, maybe BAT and crap.
-    fseek(in, offset + g_sector_size*8, SEEK_SET);
+    fseek(in, offset + g_sector_size*skip_sector_count, SEEK_SET);
 
     // Allocate output filename buffer.
     filename_len = strlen(argv[optind+1]) + 6 + 5; // output_prefix + image number + .png + \0
@@ -230,8 +302,14 @@ int main(int argc, char **argv) {
             fseek(in, g_sector_size-remaining, SEEK_CUR);
         }
 
-        // Convert from PCE planar vram tile to rgb8.
-        tile_to_rgb8(img, vram_data, palette, &header);
+        if(header.format == BG) {
+            // Convert from PCE planar vram tile to rgb8.
+            tile_to_rgb8(img, vram_data, palette, &header);
+        }
+        else {
+            // Convert from PCE planar sprite tiles to rgb8.
+            sprite_to_rgb8(img, vram_data, palette, &header);
+        }
 
         snprintf(filename, filename_len, "%s%06d.png", argv[optind+1], k);
         stbi_write_png(filename, header.width, header.height, 3, img, 0);

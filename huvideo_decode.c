@@ -15,6 +15,8 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
+static uint32_t g_sector_size = 0x0930; // redump seems to be using mode1, so sectors are 2352 bytes long.
+
 enum HuVideoFormat {
     BG = 0,
     SPR
@@ -26,7 +28,7 @@ struct header_t {
     uint16_t height;
     uint8_t flag;
     uint8_t format;
-
+    uint16_t unknown[4];
 };
 
 /* This part is based upon the source code found in Power Golf 2 and Beyond Shadowgate. */
@@ -83,6 +85,8 @@ int decode_header(FILE *in, struct header_t *header) {
         return 0;
     }
     // The next 8 bytes are unused.
+    fread(&header->unknown, 1, 8, in);
+
     return 1;
 }
 
@@ -92,8 +96,8 @@ void tile_to_rgb8(uint8_t *rgb, uint8_t *vram, uint8_t *palette, struct header_t
     uint16_t tile_h = header->height / 8;
     uint32_t rgb_line_stride = header->width * 3;
 
-    for(int j=0; j<tile_w; j++) {
-        for(int i=0; i<tile_h; i++) {
+    for(int j=0; j<tile_h; j++) {
+        for(int i=0; i<tile_w; i++) {
             uint8_t *pce_tile = vram + (i + j*tile_w) * 32;
             uint8_t *out_tile = rgb + (i + j*header->width) * 8 * 3;
             for(int y=0; y<8; y++, pce_tile+=2, out_tile+=rgb_line_stride) {
@@ -186,8 +190,6 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
     
-    // Apart from the header the rest is game specific.
-
     // Read palette
     fseek(in, offset + 0x20, SEEK_SET);
     n_read = fread(buffer, 1, 0x20, in);
@@ -203,11 +205,8 @@ int main(int argc, char **argv) {
         palette[i*3+2] = 255 * (buffer[2*i] & 0x07) / 7;
     }
 
-    // Let's skip background attribute table (BAT) data as the frames are stored as-is and only use 1 palette.
-    // The offset is bigger than the expected BAT data (which would have been header.width/8*header.height/8*2 = 0x200).
-    // Even if it were the BAT for the whole animation, it doesn't match.
-    // Worse! In some video (still un Power Golf 2), there's what seems to be left-overs from the coder hard drive (fragments of source code, or bits of file system).
-    fseek(in, offset + 0x24c0, SEEK_SET);
+    // Skip what should have been palettes and tiles data, but ... there's only 1 palette, maybe BAT and crap.
+    fseek(in, offset + g_sector_size*8, SEEK_SET);
 
     // Allocate output filename buffer.
     filename_len = strlen(argv[optind+1]) + 6 + 5; // output_prefix + image number + .png + \0
@@ -215,14 +214,20 @@ int main(int argc, char **argv) {
 
     // Read tiles.
     img = (uint8_t*)malloc(header.width*header.height*3);
-    vram_data_size = header.width*header.height/64 * 32;
+    vram_data_size = header.width*header.height*32/64;
     vram_data = (uint8_t*)malloc(vram_data_size);
 
     for(int k=0; k<header.frames; k++) {
-        for(int j=0; j<16; j+=4) {
-            size_t n = 4*16*32;
-            fread(vram_data+j*16*32, 1, n, in);
-            fseek(in, 0x130, SEEK_CUR);             // I have no idea what those 304 bytes are about.
+        size_t remaining;
+        uint8_t *ptr = vram_data;
+        for(remaining = vram_data_size; remaining>=2048; remaining -= 2048) {
+            fread(ptr, 1, 2048, in);
+            fseek(in, 0x130, SEEK_CUR);
+            ptr += 2048;
+        }
+        if(remaining) {
+            fread(ptr, 1, remaining, in);
+            fseek(in, g_sector_size-remaining, SEEK_CUR);
         }
 
         // Convert from PCE planar vram tile to rgb8.

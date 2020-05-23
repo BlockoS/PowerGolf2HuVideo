@@ -11,10 +11,19 @@
 #include <string.h>
 #include <getopt.h>
 #include <errno.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
+// madden ad_trans call : 51f6 sect #: $1185 count: $11
+// ad_play: call 567d
+//      _bx 0040
+//      _ax 7fdf  => huvideo header : 18/19
+//      _dh 0e
+//      _dl 00
+// init des params adpcm $5238 (w 1v 1c)
 static uint32_t g_sector_size = 0x0930; // redump seems to be using mode1, so sectors are 2352 bytes long.
 
 enum GameID {
@@ -33,7 +42,8 @@ struct header_t {
     uint16_t height;
     uint8_t flag;
     uint8_t format;
-    uint16_t unknown[4];
+    uint16_t adpcm_len;
+    uint16_t unknown[3];
 };
 
 /* This part is based upon the source code found in Power Golf 2 and Beyond Shadowgate. */
@@ -89,9 +99,17 @@ int decode_header(FILE *in, struct header_t *header) {
         fprintf(stderr, "invalid format.\n");
         return 0;
     }
-    // The next 8 bytes are unused.
-    fread(&header->unknown, 1, 8, in);
-
+    n_read = fread(&header->adpcm_len, 1, 2, in);
+    if(n_read != 2) {
+        fprintf(stderr, "failed to read adpcm length.\n");
+        return 0;
+    }
+    // The next 6 bytes are unknown.
+    n_read = fread(&header->unknown, 1, 6, in);
+    if(n_read != 6) {
+        fprintf(stderr, "failed to read the header end.\n");
+        return 0;
+    }
     return 1;
 }
 
@@ -164,25 +182,49 @@ void sprite_to_rgb8(uint8_t *rgb, uint8_t *vram, uint8_t *palette, struct header
     }
 }
 
-void usage() {
-    fprintf(stderr, "huvideo_decode -o/--offset N -g/--game G in output_prefix\n");
+int extract_adpcm(FILE *in, int64_t offset, int game_id, struct header_t *header, const char *filename) {
+    uint8_t *buffer;
+    FILE *out;
+    size_t remaining;
+    size_t start;
+    int ret;
+
+    out = fopen(filename, "wb");
+    if(out == NULL) {
+        fprintf(stderr, "failed to open %s: %s\n", filename, strerror(errno));
+        return EXIT_FAILURE;
+    }
+
+    buffer = (uint8_t*)malloc(2048);
+
+    ret = EXIT_SUCCESS;
+    start = 0x40;
+    for(remaining = header->adpcm_len; (remaining > 0) && (ret == EXIT_SUCCESS); offset += g_sector_size) {
+        size_t count;
+        size_t n_read;
+
+        fseek(in, offset, SEEK_SET);
+        
+        count = (remaining >= 2048) ? 2048 : remaining;
+        n_read = fread(buffer, 1, count, in);
+        if(n_read != count) {
+            fprintf(stderr, "failed to read %ld bytes from %s: %s\n", count, filename, strerror(errno));
+            ret = EXIT_FAILURE;
+        }
+
+        fwrite(buffer+start, 1, count - start, out);
+
+        remaining -= (n_read - start);
+        start = 0;
+    }
+    
+    fclose(out);
+    free(buffer);
+
+    return ret;
 }
 
-int main(int argc, char **argv) {
-    int c;
-    int option_index;
-
-    const struct option options[] = {
-        {"offset",  required_argument, 0, 'o' },
-        {"game",    optional_argument, 0, 'g' },
-        {0,         0,                 0,  0 }
-    };
-
-    FILE *in;
-    size_t input_length;
-    uint64_t offset;
-    struct header_t header;
-
+int extract(FILE *in, int32_t index, int64_t offset, int game_id, struct header_t *header, const char *prefix) {
     uint8_t palette[16*3];
     uint8_t buffer[0x20];
 
@@ -194,8 +236,129 @@ int main(int argc, char **argv) {
     size_t filename_len;
     char *filename;
 
-    int game_id = PowerGolf2;
+    // Allocate output filename buffer.
+    filename_len = strlen(prefix) + 32;
+    filename = (char*)malloc(filename_len);
+
+    // Create outputdirectory.
+    snprintf(filename, filename_len, "%s/%04d", prefix, index);
+    mkdir(filename, 0755);
+
+    // Read palette
+    fseek(in, offset + 0x20, SEEK_SET);
+    n_read = fread(buffer, 1, 0x20, in);
+    if(n_read != 0x20) {
+        fprintf(stderr, "failed to read palette\n");
+        return EXIT_FAILURE;
+    }
+
+    // [todo] use a fixed LUT instead.
+    for(int i=0; i<16; i++) {
+        palette[i*3  ] = 255 * ((buffer[2*i] >> 3) & 0x7) / 7;
+        palette[i*3+1] = 255 * (((buffer[2*i] >> 6) & 0x07) | ((buffer[2*i+1] & 0x07) << 2)) / 7;
+        palette[i*3+2] = 255 * (buffer[2*i] & 0x07) / 7;
+    }
+
+    int32_t skip_sector_count = 0;
+    // Found by trial and error.
+    if(game_id == PowerGolf2) {
+        skip_sector_count = 8;
+    }
+    else {
+        // Madden
+        if((header->width == 0x80) && (header->height == 0x80)) {
+            skip_sector_count = header->unknown[0];
+        }
+        else if((header->width == 0x100) && (header->height == 0x70)) {
+            skip_sector_count = 0x4;
+        }
+        else {
+            header->format = SPR;
+            skip_sector_count = header->unknown[0];
+        }
+    }
+
+    // extract adpcm
+    if((game_id == Madden) && ((header->width != 0x100) && (header->height != 0x70))) {
+        snprintf(filename, filename_len, "%s/%04d.vox", prefix, index);
+        (void)extract_adpcm(in, offset, game_id, header, filename);
+    }
+
+    // Skip what should have been palettes and adpcm data.
+    fseek(in, offset + g_sector_size*skip_sector_count, SEEK_SET);
+
+    // Read tiles.
+    img = (uint8_t*)malloc(header->width*header->height*3);
+    vram_data_size = header->width*header->height*32/64;
+    vram_data = (uint8_t*)malloc(vram_data_size);
+
+    for(int k=0; k<header->frames; k++) {
+        size_t remaining;
+        uint8_t *ptr = vram_data;
+        for(remaining = vram_data_size; remaining>=2048; remaining -= 2048) {
+            n_read = fread(ptr, 1, 2048, in);
+            if(n_read != 2048) {
+                fprintf(stderr, "failed to read sector %d: %s", k, strerror(errno));
+                memset(ptr+n_read, 0, 2048-n_read);
+            }
+            fseek(in, 0x130, SEEK_CUR);
+            ptr += 2048;
+        }
+        if(remaining) {
+            n_read = fread(ptr, 1, remaining, in);
+            if(n_read != remaining) {
+                fprintf(stderr, "failed to read sector %d: %s", k, strerror(errno));
+                memset(ptr+n_read, 0, remaining-n_read);
+            }
+            fseek(in, g_sector_size-remaining, SEEK_CUR);
+        }
+
+        if(header->format == BG) {
+            // Convert from PCE planar vram tile to rgb8.
+            tile_to_rgb8(img, vram_data, palette, header);
+        }
+        else {
+            // Convert from PCE planar sprite tiles to rgb8.
+            sprite_to_rgb8(img, vram_data, palette, header);
+        }
+
+        snprintf(filename, filename_len, "%s/%04d/%06d.png", prefix, index, k);
+        stbi_write_png(filename, header->width, header->height, 3, img, 0);
+    }
+
+    free(filename);
+    free(img);
+    free(vram_data);
+
+    return EXIT_SUCCESS;
+}
+
+void usage() {
+    fprintf(stderr, "huvideo_decode -o/--offset N -g/--game G in output_directory\n");
+}
+
+int main(int argc, char **argv) {
+    int c;
+    int option_index;
+
+    const struct option options[] = {
+        {"offset",  optional_argument, 0, 'o' },
+        {"game",    optional_argument, 0, 'g' },
+        {0,         0,                 0,  0 }
+    };
+
+    FILE *in;
+    size_t input_length;
     
+    struct header_t header;
+   
+    int64_t i;
+    int64_t count = 0;
+    int64_t offset = -1; 
+    int game_id = PowerGolf2;
+
+    int ret;
+
     for(;;) {
         c = getopt_long(argc, argv, "g:o:", options, &option_index);
         if(c < 0) {
@@ -237,87 +400,27 @@ int main(int argc, char **argv) {
     fseek(in, 0, SEEK_SET);
     input_length -= ftell(in);
 
-    // Read  Huvideo header.
-    fseek(in, offset, SEEK_SET);
-    if(!decode_header(in, &header)) {
-        return EXIT_FAILURE;
-    }
-    
-    // Read palette
-    fseek(in, offset + 0x20, SEEK_SET);
-    n_read = fread(buffer, 1, 0x20, in);
-    if(n_read != 0x20) {
-        fprintf(stderr, "failed to read palette\n");
-        return EXIT_FAILURE;
-    }
-
-    // [todo] use a fixed LUT instead.
-    for(int i=0; i<16; i++) {
-        palette[i*3  ] = 255 * ((buffer[2*i] >> 3) & 0x7) / 7;
-        palette[i*3+1] = 255 * (((buffer[2*i] >> 6) & 0x07) | ((buffer[2*i+1] & 0x07) << 2)) / 7;
-        palette[i*3+2] = 255 * (buffer[2*i] & 0x07) / 7;
-    }
-
-    int32_t skip_sector_count = 0;
-    // Found by trial and error.
-    if(game_id == PowerGolf2) {
-        skip_sector_count = 8;
+    if(offset >= 0) {
+        count = 1;
     }
     else {
-        // Madden
-        if((header.width == 0x80) && (header.height == 0x80)) {
-            skip_sector_count = header.unknown[1];
-        }
-        else if((header.width == 0x100) && (header.height == 0x70)) {
-            skip_sector_count = 0x4;
-        }
-        else {
-            header.format = SPR;
-            skip_sector_count = header.unknown[1];
-        }
+        count = input_length / g_sector_size;
     }
 
-    // Skip what should have been palettes and tiles data, but ... there's only 1 palette, maybe BAT and crap.
-    fseek(in, offset + g_sector_size*skip_sector_count, SEEK_SET);
+    for(i=0; i<count; i++) {
+        size_t skip = (offset > 0) ? offset : ((i*g_sector_size) + 0x10);
+        fseek(in, skip, SEEK_SET);
 
-    // Allocate output filename buffer.
-    filename_len = strlen(argv[optind+1]) + 6 + 5; // output_prefix + image number + .png + \0
-    filename = (char*)malloc(filename_len);
-
-    // Read tiles.
-    img = (uint8_t*)malloc(header.width*header.height*3);
-    vram_data_size = header.width*header.height*32/64;
-    vram_data = (uint8_t*)malloc(vram_data_size);
-
-    for(int k=0; k<header.frames; k++) {
-        size_t remaining;
-        uint8_t *ptr = vram_data;
-        for(remaining = vram_data_size; remaining>=2048; remaining -= 2048) {
-            fread(ptr, 1, 2048, in);
-            fseek(in, 0x130, SEEK_CUR);
-            ptr += 2048;
-        }
-        if(remaining) {
-            fread(ptr, 1, remaining, in);
-            fseek(in, g_sector_size-remaining, SEEK_CUR);
+        // Read  Huvideo header.
+        if(!decode_header(in, &header)) {
+            continue;
         }
 
-        if(header.format == BG) {
-            // Convert from PCE planar vram tile to rgb8.
-            tile_to_rgb8(img, vram_data, palette, &header);
+        // Extract image
+        ret = extract(in, i, skip, game_id, &header, argv[optind+1]);
+        if(ret != EXIT_SUCCESS) {
+            return ret;
         }
-        else {
-            // Convert from PCE planar sprite tiles to rgb8.
-            sprite_to_rgb8(img, vram_data, palette, &header);
-        }
-
-        snprintf(filename, filename_len, "%s%06d.png", argv[optind+1], k);
-        stbi_write_png(filename, header.width, header.height, 3, img, 0);
     }
-
-    free(filename);
-    free(img);
-    free(vram_data);
-
-    return EXIT_SUCCESS;
+    return ret;
 }

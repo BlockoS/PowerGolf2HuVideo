@@ -7,8 +7,6 @@
 # with decoder: binary generated form huvideo_decode.c 
 #      image  : Power Golf 2 cd image
 #
-offset_list="0x03739450 0x0384CE50 0x0395E390 0x03A0A7D0 0x03B20690 0x03CF2AD0 0x03E3B210 0x04062610 0x0435AA50 0x0445E310 0x04505DD0 0x045A8F10 0x1112F410 0x11242E10 0x11354350 0x11400790 0x11516650 0x116E8A90 0x118311D0 0x11A585D0 0x11D50A10 0x11E542D0 0x11EFBD90 0x11F9EED0"
-
 if [ ! -f "${1}" ] || [ ! -x "${1}" ]; then
     echo "${1} is not an executable file"
     exit 1
@@ -29,9 +27,12 @@ fi
 
 mkdir -p ./output
 
-for offset in $offset_list; do
-    out="./output/video_${offset}.gif"
-    ${1} -o ${offset} "${2}" ./output/img_
-    ffmpeg -y -i ./output/img_%06d.png ${out}
-    rm ./output/img_*.png
+${1} "${2}" ./output 2> /dev/null
+
+for i in ./output/* ; do
+    if [ -d "${i}" ]; then
+        out="${i}.gif"
+        ffmpeg -y -i "${i}/%06d.png" "${out}"
+        rm -rf "${i}"
+    fi
 done

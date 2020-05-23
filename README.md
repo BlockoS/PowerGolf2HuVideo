@@ -4,8 +4,8 @@
 ![03A0A7D0](https://blockos.org/releases/pcengine/HuVideo/PowerGolf2/video_0x03739450.gif)
 ![0384CE50](https://blockos.org/releases/pcengine/HuVideo/PowerGolf2/video_0x0384CE50.gif)
 
-![0342A090](http://blockos.org/releases/pcengine/HuVideo/Madden/video_0x0342A090.gif)
-![0x034CBF70](http://blockos.org/releases/pcengine/HuVideo/Madden/video_0x034CBF70.gif)
+![0342A090](https://blockos.org/releases/pcengine/HuVideo/Madden/video_0x0342A090.gif)
+![0x034CBF70](https://blockos.org/releases/pcengine/HuVideo/Madden/video_0x034CBF70.gif)
 
 ## Decoder
 
@@ -21,9 +21,16 @@ huvideo_decode -o 0x03739450 -g 0 <image> <output_prefix>
 ```
 ### Description
 This program will extract all video frames of a single HuVideo from a CDROM image and output them as PNG files.
+The adpcm samples of some of the videos from John Madden Duo CD Football are also extracted as .vox files (https://en.wikipedia.org/wiki/Dialogic_ADPCM).
+
+They can be played or converted to another audio format using sox.
+```bash
+play --rate 16k sample.vox
+sox --rate 16k sample.vox sample.wav
+```
 
 ### Parameters
- * `-o/--offset <hex>` (mandatory) specify the offset in byte in the image file.
+ * `-o/--offset <hex>` (optional) specify the offset in byte in the image file.
  * `-g/--game <int>` (optional) specify the game being process (0 for Power Golf 2 - Golfer and 1 for John Madden Duo CD Football).
  * `<image>` CDROM image.
  * `<output_prefix>` output files prefix.
